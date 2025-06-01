@@ -23,6 +23,8 @@ Before running this example, ensure you have:
 Usage:
 
 	go run . -ydb "grpc://localhost:2136/local"
+	go run . -ydb "grpc://localhost:2136/local" -driver-log
+	go run . -ydb "grpc://localhost:2136/local" -driver-log=trace
 
 Connection timeout:
 The example uses a 5-second timeout for ydb.Open() because local YDB instances
@@ -88,6 +90,8 @@ Batch Processing Features:
 - Shows how to process and commit each batch individually for immediate acknowledgment
 - Continues reading until all messages are consumed or timeout occurs
 
-Note: This example does not clean up resources to allow exploration via Web UI.
+Note: Use the `-driver-log` flag to see YDB driver's debug information. This flag
+prints detailed connection and request logs which can help with troubleshooting.
+This example does not clean up resources to allow exploration via Web UI.
 */
 package main

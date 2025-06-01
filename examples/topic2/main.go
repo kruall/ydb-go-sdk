@@ -6,16 +6,67 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log"
+	stdlog "log"
+	"os"
 	"path"
+	"strings"
 	"time"
 
 	ydb "github.com/ydb-platform/ydb-go-sdk/v3"
+	sdklog "github.com/ydb-platform/ydb-go-sdk/v3/log"
 	"github.com/ydb-platform/ydb-go-sdk/v3/topic/topicoptions"
 	"github.com/ydb-platform/ydb-go-sdk/v3/topic/topicwriter"
+	"github.com/ydb-platform/ydb-go-sdk/v3/trace"
 )
 
 var connectionString = flag.String("ydb", "grpc://localhost:2136/local", "")
+
+type logFlag struct {
+	enabled bool
+	level   sdklog.Level
+}
+
+func (f *logFlag) String() string {
+	if !f.enabled {
+		return ""
+	}
+	return strings.ToLower(f.level.String())
+}
+
+func (f *logFlag) Set(s string) error {
+	f.enabled = true
+	if s == "" || s == "true" {
+		f.level = sdklog.DEBUG
+		return nil
+	}
+	if s == "false" {
+		f.enabled = false
+		return nil
+	}
+	switch strings.ToLower(s) {
+	case "trace":
+		f.level = sdklog.TRACE
+	case "debug":
+		f.level = sdklog.DEBUG
+	case "info":
+		f.level = sdklog.INFO
+	case "warn":
+		f.level = sdklog.WARN
+	case "error":
+		f.level = sdklog.ERROR
+	default:
+		return fmt.Errorf("invalid log level: %s", s)
+	}
+	return nil
+}
+
+func (f *logFlag) IsBoolFlag() bool { return true }
+
+var driverLog logFlag
+
+func init() {
+	flag.Var(&driverLog, "driver-log", "enable driver debug logging (optional level: trace|debug|info|warn|error)")
+}
 
 func main() {
 	flag.Parse()
@@ -25,8 +76,22 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	opts := make([]ydb.Option, 0)
+	if driverLog.enabled {
+		opts = append(opts,
+			ydb.WithLogger(
+				sdklog.Default(os.Stderr,
+					sdklog.WithColoring(),
+					sdklog.WithMinLevel(driverLog.level),
+				),
+				trace.DetailsAll,
+				sdklog.WithLogQuery(),
+			),
+		)
+	}
+
 	// Connect to YDB
-	db, err := ydb.Open(ctx, *connectionString)
+	db, err := ydb.Open(ctx, *connectionString, opts...)
 	if err != nil {
 		panic(fmt.Errorf("connect error: %w", err))
 	}
@@ -36,25 +101,25 @@ func main() {
 	topicPath := path.Join(db.Name(), "example-topic")
 
 	// Step 1: Delete topic if exists (ignore schema errors)
-	log.Println("Deleting topic (if exists)...")
+	stdlog.Println("Deleting topic (if exists)...")
 	err = db.Query().Exec(ctx, `DROP TOPIC IF EXISTS `+"`"+topicPath+"`")
 	if err != nil {
 		panic(fmt.Errorf("drop topic error: %w", err))
 	}
-	log.Println("Topic deleted (if existed)")
+	stdlog.Println("Topic deleted (if existed)")
 
 	// Step 2: Create topic via YQL
-	log.Println("Creating topic...")
+	stdlog.Println("Creating topic...")
 	err = db.Query().Exec(ctx, `CREATE TOPIC `+"`"+topicPath+"`"+` (
 		CONSUMER consumer1
 	)`)
 	if err != nil {
 		panic(fmt.Errorf("create topic error: %w", err))
 	}
-	log.Println("Topic created successfully")
+	stdlog.Println("Topic created successfully")
 
 	// Step 3: Write 3 messages to the topic
-	log.Println("Writing 3 messages...")
+	stdlog.Println("Writing 3 messages...")
 	writer, err := db.Topic().StartWriter(topicPath)
 	if err != nil {
 		panic(fmt.Errorf("start writer error: %w", err))
@@ -71,11 +136,11 @@ func main() {
 		if err != nil {
 			panic(fmt.Errorf("write message %d error: %w", i+1, err))
 		}
-		log.Printf("Message %d written successfully", i+1)
+		stdlog.Printf("Message %d written successfully", i+1)
 	}
 
 	// Step 4: Read messages in batches from the topic
-	log.Println("Starting batch reader...")
+	stdlog.Println("Starting batch reader...")
 	reader, err := db.Topic().StartReader("consumer1",
 		topicoptions.ReadTopic(topicPath),
 	)
@@ -96,14 +161,14 @@ func main() {
 
 		if err != nil {
 			if readCtx.Err() == context.DeadlineExceeded {
-				log.Println("Read timeout reached, no more messages available")
+				stdlog.Println("Read timeout reached, no more messages available")
 				break
 			}
 			panic(fmt.Errorf("read batch error: %w", err))
 		}
 
 		if batch == nil || len(batch.Messages) == 0 {
-			log.Println("No messages in batch, continuing...")
+			stdlog.Println("No messages in batch, continuing...")
 			continue
 		}
 
@@ -114,20 +179,20 @@ func main() {
 				panic(fmt.Errorf("read message content error: %w", err))
 			}
 
-			log.Printf("Message read: %s", string(content))
-			log.Printf("Offset: %d", msg.Offset)
+			stdlog.Printf("Message read: %s", string(content))
+			stdlog.Printf("Offset: %d", msg.Offset)
 			totalMessagesRead++
 		}
 
-		log.Printf("Batch processed with %d messages", len(batch.Messages))
+		stdlog.Printf("Batch processed with %d messages", len(batch.Messages))
 
 		// Commit the batch immediately after processing
 		err = reader.Commit(batch.Context(), batch)
 		if err != nil {
 			panic(fmt.Errorf("commit batch error: %w", err))
 		}
-		log.Printf("Batch committed successfully")
+		stdlog.Printf("Batch committed successfully")
 	}
 
-	log.Printf("Example completed successfully - read %d messages total", totalMessagesRead)
+	stdlog.Printf("Example completed successfully - read %d messages total", totalMessagesRead)
 }
